@@ -21,9 +21,9 @@ warn() { printf '%s!%s %s\n' "$Y" "$N" "$1"; }
 die()  { printf '%s✗%s %s\n' "$R" "$N" "$1" >&2; exit 1; }
 
 if [ "${1:-}" = "--uninstall" ]; then
-  rm -f "$BIN/remote-login" && ok "removed $BIN/remote-login"
-  rm -rf "$SKILL" && ok "removed $SKILL"
-  [ -d "$DEST/.git" ] && rm -rf "$DEST" && ok "removed $DEST"
+  rm -f "$BIN/remote-login"; ok "removed $BIN/remote-login"
+  rm -rf "$SKILL"; ok "removed $SKILL"
+  if [ -d "$DEST/.git" ]; then rm -rf "$DEST"; ok "removed $DEST"; fi
   echo "Left in place: ~/.cache/remote-login (headless browser profile) and ~/.config/remote-login."
   exit 0
 fi
@@ -37,11 +37,13 @@ if [ -n "$HERE" ] && [ -f "$HERE/remote-login" ] && [ -f "$HERE/page.html" ]; th
   DEST="$HERE"
   ok "using this clone: $DEST"
 elif [ -d "$DEST/.git" ]; then
-  git -C "$DEST" pull --ff-only -q && ok "updated $DEST"
+  git -C "$DEST" pull --ff-only -q || die "could not update $DEST (local changes?)"
+  ok "updated $DEST"
 else
   command -v git >/dev/null || die "git is missing: run  xcode-select --install"
   mkdir -p "$(dirname "$DEST")"
-  git clone -q --depth 1 "$REPO" "$DEST" && ok "downloaded to $DEST"
+  git clone -q --depth 1 "$REPO" "$DEST" || die "could not download $REPO"
+  ok "downloaded to $DEST"
 fi
 
 # 2. Requirements.
