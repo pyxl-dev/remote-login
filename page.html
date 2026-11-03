@@ -1,0 +1,318 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover, interactive-widget=resizes-content">
+<meta name="referrer" content="no-referrer">
+<meta name="theme-color" content="#f4f3ee" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#1c1b19" media="(prefers-color-scheme: dark)">
+<title>Connexion à distance</title>
+<style>
+  :root {
+    --bg: #f4f3ee; --fg: #1f1e1c; --muted: #6b6a66; --card: #fff; --line: #dedcd4; --field: #eae8e1;
+    --accent: #b0502d; --on-accent: #fff; --ok: #2f7d4f; --warn: #a3471f; --stage: #e9e7e0;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #1c1b19; --fg: #eeece6; --muted: #a09e97; --card: #262522; --line: #3a3934; --field: #2e2d29;
+            --accent: #e0896a; --on-accent: #1c1b19; --ok: #6cc08d; --warn: #f08b65; --stage: #121110; }
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { height: 100%; }
+  body {
+    margin: 0; display: flex; flex-direction: column; height: 100dvh; overflow: hidden;
+    background: var(--bg); color: var(--fg); font: 15px/1.35 -apple-system, system-ui, Roboto, sans-serif;
+    overscroll-behavior: none;
+  }
+
+  /* Address bar */
+  header {
+    flex: none; display: flex; align-items: center; gap: 6px;
+    padding: calc(6px + env(safe-area-inset-top)) 8px 6px;
+    border-bottom: 1px solid var(--line); background: var(--bg);
+  }
+  .icon {
+    flex: none; width: 40px; height: 40px; display: grid; place-items: center;
+    border: 0; border-radius: 20px; background: transparent; color: var(--fg); padding: 0;
+  }
+  .icon svg { width: 22px; height: 22px; }
+  .icon[aria-pressed="true"] { background: var(--field); color: var(--accent); }
+  .icon:active, #done:active { opacity: .55; }
+  #addr {
+    flex: 1; min-width: 0; height: 36px; display: flex; align-items: center; gap: 8px;
+    padding: 0 12px; border-radius: 18px; background: var(--field);
+  }
+  #dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: none; transition: background .2s; }
+  #dot.live { background: var(--ok); }
+  #dot.bad { background: var(--warn); }
+  #host { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; }
+  #host b { font-weight: 600; }
+  #host span { color: var(--muted); }
+  #done {
+    flex: none; height: 36px; padding: 0 14px; border: 0; border-radius: 18px;
+    background: var(--accent); color: var(--on-accent); font: inherit; font-weight: 600;
+  }
+
+  /* Live view */
+  #view {
+    position: relative; flex: 1; min-height: 0; display: grid; place-items: center;
+    background: var(--stage); overflow: hidden; touch-action: none; user-select: none; -webkit-user-select: none;
+  }
+  #frame { display: block; -webkit-touch-callout: none; pointer-events: none; opacity: 0; transition: opacity .25s; }
+  #frame.ready { opacity: 1; }
+  #wait { position: absolute; color: var(--muted); font-size: 14px; }
+  #frame.ready ~ #wait { display: none; }
+  .ping {
+    position: absolute; width: 34px; height: 34px; margin: -17px 0 0 -17px; border-radius: 50%;
+    background: color-mix(in srgb, var(--accent) 30%, transparent); pointer-events: none;
+    animation: ping .45s ease-out forwards;
+  }
+  @keyframes ping { from { transform: scale(.3); opacity: 1; } to { transform: scale(1.3); opacity: 0; } }
+
+  /* Receives the phone keyboard; its text is relayed as you type. */
+  #kb {
+    position: fixed; left: 0; top: 0; width: 2px; height: 24px; padding: 0; border: 0; margin: 0;
+    opacity: 0; font-size: 16px; color: transparent; background: transparent; caret-color: transparent;
+    pointer-events: none;
+  }
+
+  #toast {
+    position: absolute; left: 50%; bottom: calc(14px + env(safe-area-inset-bottom)); transform: translateX(-50%);
+    max-width: calc(100% - 32px); padding: 9px 14px; border-radius: 12px;
+    background: var(--card); color: var(--fg); border: 1px solid var(--line);
+    box-shadow: 0 6px 24px rgba(0,0,0,.18); font-size: 14px; text-align: center;
+    pointer-events: none; opacity: 0; transition: opacity .25s;
+  }
+  #toast.show { opacity: 1; }
+  #toast.err { color: var(--warn); }
+
+  #end { flex: 1; display: grid; place-items: center; padding: 24px; text-align: center; color: var(--muted); }
+</style>
+</head>
+<body>
+<header>
+  <button id="cancel" class="icon" aria-label="Annuler la connexion">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+  </button>
+  <div id="addr"><span id="dot"></span><span id="host">Navigateur de Claude</span></div>
+  <button id="keys" class="icon" aria-label="Clavier" aria-pressed="false">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="6" width="19" height="12" rx="2.5"/><path d="M6.5 10h.01M10 10h.01M13.5 10h.01M17 10h.01M6.5 13.5h.01M17 13.5h.01M9.5 14h5"/></svg>
+  </button>
+  <button id="done">Terminé</button>
+</header>
+<main id="view">
+  <img id="frame" src="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==" alt="Vue du navigateur de Claude">
+  <div id="wait">Connexion au navigateur…</div>
+  <div id="toast" role="status"></div>
+</main>
+<input id="kb" type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" enterkeyhint="go" aria-hidden="true" tabindex="-1">
+
+<script>
+const token = new URLSearchParams(location.search).get("t") || "";
+history.replaceState(null, "", location.pathname + "?t=" + token);
+const $ = (id) => document.getElementById(id);
+const view = $("view"), img = $("frame"), kb = $("kb"), dot = $("dot"), keysBtn = $("keys");
+let closed = false, target = null, fields = [];
+
+async function call(path, body) {
+  const r = await fetch(path + "?t=" + encodeURIComponent(token), {
+    method: body === undefined ? "GET" : "POST",
+    headers: { "Content-Type": "application/json" },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || r.status);
+  return j;
+}
+// Input goes out one request at a time, in order.
+let queue = Promise.resolve();
+const send = (path, body) => (queue = queue.then(() => call(path, body)).catch((e) => { toast(e.message, true); return {}; }));
+
+let toastTimer;
+function toast(text, err = false, ms = 3500) {
+  const t = $("toast");
+  t.textContent = text; t.className = "show" + (err ? " err" : "");
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => (t.className = ""), ms);
+}
+
+// Frames: the server answers as soon as the page changes, so this loop is the video.
+let seq = 0, lastUrl = null;
+async function frames() {
+  while (!closed) {
+    if (document.hidden) { await new Promise((r) => setTimeout(r, 1000)); continue; }
+    try {
+      const r = await fetch("/frame.jpg?t=" + encodeURIComponent(token) + "&after=" + seq);
+      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || r.status);
+      seq = +r.headers.get("X-Seq") || seq + 1;
+      const url = URL.createObjectURL(await r.blob());
+      await new Promise((ok) => { img.onload = img.onerror = ok; img.src = url; });
+      if (lastUrl) URL.revokeObjectURL(lastUrl);
+      lastUrl = url;
+      fit(); img.classList.add("ready"); dot.className = "live";
+    } catch (e) {
+      dot.className = "bad"; toast("Vue indisponible : " + e.message, true);
+      await new Promise((r) => setTimeout(r, 1500));
+    }
+  }
+}
+function fit() {
+  const nw = img.naturalWidth, nh = img.naturalHeight;
+  if (!nw || !nh) return;
+  const s = Math.min(view.clientWidth / nw, view.clientHeight / nh);
+  img.style.width = Math.round(nw * s) + "px"; img.style.height = Math.round(nh * s) + "px";
+}
+
+function showHost(u) {
+  try {
+    const x = new URL(u), h = $("host");
+    h.replaceChildren(Object.assign(document.createElement("b"), { textContent: x.host }),
+                      Object.assign(document.createElement("span"), { textContent: x.pathname === "/" ? "" : x.pathname }));
+  } catch { $("host").textContent = u; }
+}
+async function state() {
+  if (closed) return;
+  try {
+    const s = await call("/state");
+    if (!target) {
+      target = s.target;
+      toast(target === "headless" ? "Touche un champ pour écrire, glisse pour défiler."
+                                  : "Touche la page pour cliquer, puis le clavier en haut pour écrire.", false, 5000);
+    }
+    if (s.url) showHost(s.url);
+    fields = s.fields || [];
+    // The field went away (form sent, page changed): put the keyboard down.
+    if (s.editable === false && document.activeElement === kb && Date.now() - kbOpened > 1500) closeKeyboard();
+    if (s.locked) toast("Le Mac est verrouillé : impossible d'afficher le navigateur.", true);
+    else if (!s.visible) toast("Le panneau navigateur n'est plus affiché sur le Mac. Dis-le à Claude.", true);
+  } catch (e) { toast(e.message, true); }
+  setTimeout(state, document.hidden ? 3000 : 800);
+}
+
+// The remote browser takes the size of this view, so the page fits the phone exactly.
+let vpTimer;
+function viewport() {
+  clearTimeout(vpTimer);
+  vpTimer = setTimeout(() => {
+    fit();
+    send("/viewport", { w: view.clientWidth, h: view.clientHeight, dpr: devicePixelRatio || 2 });
+  }, 150);
+}
+addEventListener("resize", viewport);
+
+/* Keyboard: a hidden input takes the phone keyboard; each change is sent as a diff.
+   A leading space lets backspace fire even when nothing is left to delete. */
+const SENT = " ";
+let sent = "", composing = false, kbOpened = 0;
+function openKeyboard(type) {
+  kb.type = type === "password" ? "password" : "text";
+  kb.inputMode = type === "email" ? "email" : type === "tel" ? "tel" : type === "number" ? "numeric" : "text";
+  kb.autocomplete = type === "password" ? "current-password" : "off";
+  kb.value = SENT; sent = ""; kbOpened = Date.now();
+  kb.focus({ preventScroll: true });
+  kb.setSelectionRange?.(1, 1);
+}
+function closeKeyboard() { kb.blur(); }
+kb.addEventListener("focus", () => keysBtn.setAttribute("aria-pressed", "true"));
+kb.addEventListener("blur", () => { keysBtn.setAttribute("aria-pressed", "false"); kb.value = ""; sent = ""; });
+kb.addEventListener("compositionstart", () => (composing = true));
+kb.addEventListener("compositionend", () => { composing = false; relay(); });
+kb.addEventListener("input", relay);
+function relay() {
+  const v = kb.value;
+  let extra = 0, cur = v;
+  if (v.startsWith(SENT)) cur = v.slice(SENT.length); else extra = 1;
+  let p = 0;
+  while (p < sent.length && p < cur.length && sent[p] === cur[p]) p++;
+  const del = sent.length - p + extra, text = cur.slice(p);
+  sent = cur;
+  if (extra && !composing) { kb.value = SENT + cur; kb.setSelectionRange?.(kb.value.length, kb.value.length); }
+  if (del || text) send("/edit", { del, text });
+}
+kb.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") { e.preventDefault(); send("/key", { key: "enter" }); }
+  else if (e.key === "Tab") { e.preventDefault(); send("/key", { key: e.shiftKey ? "shifttab" : "tab" }); }
+});
+keysBtn.addEventListener("pointerdown", (e) => e.preventDefault());
+keysBtn.addEventListener("click", () => (document.activeElement === kb ? closeKeyboard() : openKeyboard("text")));
+
+// Touch: a tap clicks, a drag scrolls (with a little momentum when let go).
+function frac(cx, cy) {
+  const r = img.getBoundingClientRect();
+  if (!r.width) return null;
+  const x = (cx - r.left) / r.width, y = (cy - r.top) / r.height;
+  return x < 0 || x > 1 || y < 0 || y > 1 ? null : { x, y, scale: img.naturalWidth / r.width / (target === "headless" ? Math.min(devicePixelRatio || 2, 2) : 1) };
+}
+function fieldAt(x, y) {
+  const r = img.getBoundingClientRect(), px = 8 / r.width, py = 8 / r.height;
+  return fields.find((f) => x >= f.x - px && x <= f.x + f.w + px && y >= f.y - py && y <= f.y + f.h + py);
+}
+let touch = null, pendingDy = 0, pendingDx = 0, flushTimer = null;
+function flushScroll() {
+  flushTimer = null;
+  if (!touch && !pendingDy && !pendingDx) return;
+  const dx = Math.round(pendingDx), dy = Math.round(pendingDy);
+  pendingDx = pendingDy = 0;
+  if (dx || dy) send("/scroll", { dx, dy, x: touch?.fx ?? 0.5, y: touch?.fy ?? 0.5 }).then((r) => r.fields && (fields = r.fields));
+}
+view.addEventListener("pointerdown", (e) => {
+  e.preventDefault();  // keep focus on the keyboard input
+  if (touch) return;
+  const f = frac(e.clientX, e.clientY);
+  touch = { id: e.pointerId, x: e.clientX, y: e.clientY, lx: e.clientX, ly: e.clientY, t: e.timeStamp, lt: e.timeStamp,
+            vy: 0, vx: 0, moved: false, fx: f?.x ?? 0.5, fy: f?.y ?? 0.5, scale: f?.scale ?? 1 };
+  view.setPointerCapture(e.pointerId);
+});
+view.addEventListener("pointermove", (e) => {
+  if (!touch || e.pointerId !== touch.id) return;
+  if (!touch.moved && Math.hypot(e.clientX - touch.x, e.clientY - touch.y) > 10) touch.moved = true;
+  if (!touch.moved) return;
+  const dx = touch.lx - e.clientX, dy = touch.ly - e.clientY, dt = Math.max(1, e.timeStamp - touch.lt);
+  touch.vx = dx / dt; touch.vy = dy / dt;
+  pendingDx += dx * touch.scale; pendingDy += dy * touch.scale;
+  touch.lx = e.clientX; touch.ly = e.clientY; touch.lt = e.timeStamp;
+  if (!flushTimer) flushTimer = setTimeout(flushScroll, 50);
+});
+view.addEventListener("pointerup", (e) => {
+  if (!touch || e.pointerId !== touch.id) return;
+  const t = touch;
+  if (t.moved) {
+    if (e.timeStamp - t.lt < 80) {  // flick: carry on a bit
+      pendingDx += Math.max(-1500, Math.min(1500, t.vx * 220)) * t.scale;
+      pendingDy += Math.max(-1500, Math.min(1500, t.vy * 220)) * t.scale;
+    }
+    clearTimeout(flushTimer); flushScroll(); touch = null;
+    return;
+  }
+  touch = null;
+  const f = frac(e.clientX, e.clientY);
+  if (!f) return;
+  const p = document.createElement("span");
+  p.className = "ping"; p.style.left = e.clientX - view.getBoundingClientRect().left + "px"; p.style.top = e.clientY - view.getBoundingClientRect().top + "px";
+  view.appendChild(p); setTimeout(() => p.remove(), 500);
+
+  // Open the keyboard inside the tap itself: phones refuse it later.
+  const hit = fieldAt(f.x, f.y);
+  if (hit) { kb.style.left = e.clientX + "px"; kb.style.top = e.clientY + "px"; openKeyboard(hit.type); }
+  else if (target === "headless" && document.activeElement === kb) closeKeyboard();
+  send("/tap", { x: f.x, y: f.y }).then((r) => {
+    if (r.fields) fields = r.fields;
+    if (target !== "headless" || r.editable === undefined) return;
+    if (r.editable && document.activeElement !== kb) openKeyboard(r.type);
+    else if (r.editable && hit && hit.type !== r.type && r.type === "password") openKeyboard("password");
+    else if (!r.editable && document.activeElement === kb) closeKeyboard();
+  });
+});
+view.addEventListener("pointercancel", () => { touch = null; });
+
+function finish(path, text) {
+  closed = true; kb.blur();
+  call(path, {}).catch(() => {}).finally(() => {
+    document.body.replaceChildren(Object.assign(document.createElement("div"), { id: "end", textContent: text }));
+  });
+}
+$("done").addEventListener("click", () => finish("/done", "Merci. Claude reprend la main, tu peux fermer cette page."));
+$("cancel").addEventListener("click", () => { if (confirm("Annuler la connexion ? Claude sera prévenu.")) finish("/cancel", "Annulé. Claude est prévenu."); });
+
+viewport(); state(); frames();
+</script>
+</body>
+</html>

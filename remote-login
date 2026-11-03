@@ -1,0 +1,544 @@
+#!/usr/bin/env -S uv run --quiet --script
+# /// script
+# requires-python = ">=3.11"
+# dependencies = ["websockets>=13"]
+# ///
+"""remote-login: let the person sign in to a browser of Claude's from their phone.
+
+Serves a one-time page on this Mac's Tailscale address. The page shows a live
+view of the browser; taps, text and keys from the phone become real input in
+it. Typed text never goes through the agent: phone -> this server -> browser
+input. It is never logged or stored.
+
+Two targets:
+  pane      Claude's built-in browser pane in the desktop app. Real clicks and
+            keystrokes on the Mac, so the screen must be unlocked and this
+            session (with its Browser pane) on screen. The sign-in lands in the
+            pane's own profile.
+  headless  A dedicated headless Brave (profile ~/.cache/remote-login/profile,
+            CDP on 127.0.0.1:9334). Works with the Mac locked. The sign-in
+            stays in that profile; keep working there with
+            BU_CDP_URL=http://127.0.0.1:9334 BU_NAME=remote-login browser-harness.
+
+    remote-login serve [--target auto|pane|headless] [--url URL] [--host HOST] [--notify]
+    remote-login headless-stop
+
+`auto` picks pane when the screen is unlocked and the pane is visible, else
+headless (which needs --url). Prints "TARGET <t>" and "LINK <url>", then blocks.
+Exits 0 with "DONE" when the person taps "Terminé", 3 on "Annuler", 2 on timeout.
+"""
+import argparse
+import base64
+import itertools
+import json
+import os
+import secrets
+import signal
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+import urllib.request
+import warnings
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from urllib.parse import parse_qs, urlparse
+
+HERE = Path(__file__).resolve().parent
+HELPER = HERE / "bin" / "rl-helper"
+PAGE = (HERE / "page.html").read_text(encoding="utf-8")
+BRAVE = "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser"
+# Overridable so a test run never touches a live sign-in.
+PROFILE = Path(os.environ.get("REMOTE_LOGIN_PROFILE", Path.home() / ".cache" / "remote-login" / "profile"))
+CDP_PORT = int(os.environ.get("REMOTE_LOGIN_CDP_PORT", "9334"))
+NOTIFY = Path(os.environ.get("REMOTE_LOGIN_NOTIFY", Path.home() / ".config" / "remote-login" / "notify"))
+PHONE = {"width": 390, "height": 844}
+
+warnings.filterwarnings("ignore", message=r"connect\(\) must be used")
+
+
+def helper(*args, stdin=None):
+    r = subprocess.run([str(HELPER), *args], input=stdin, capture_output=True, timeout=20)
+    if r.returncode != 0:
+        raise RuntimeError(r.stderr.decode(errors="replace").strip() or "rl-helper failed")
+    return r.stdout.decode()
+
+
+def mac_status():
+    return json.loads(helper("status"))
+
+
+def tailscale_ip():
+    try:
+        return subprocess.run(["tailscale", "ip", "-4"], capture_output=True, text=True, timeout=5).stdout.split()[0]
+    except Exception:
+        return None
+
+
+class PaneTarget:
+    """Claude's browser pane, driven with real mouse and keyboard events."""
+
+    name = "pane"
+
+    def __init__(self, host):
+        self.host = host or ""
+        self.rect = None
+        self.at = 0.0
+        self.lock = threading.Lock()
+
+    def locate(self, fresh=False):
+        with self.lock:
+            if fresh or self.rect is None or time.time() - self.at > 2:
+                self.rect = json.loads(helper("locate", self.host))
+                self.at = time.time()
+            return self.rect
+
+    def point(self, fx, fy):
+        r = self.locate()
+        return r["x"] + fx * r["w"], r["y"] + fy * r["h"]
+
+    def state(self):
+        st = mac_status()
+        try:
+            r = self.locate()
+            st.update(url=r["url"], visible=not st["locked"])
+        except Exception as e:
+            st.update(visible=False, error=str(e))
+        return st
+
+    def frame(self, after=0):
+        if after:
+            time.sleep(0.35)  # no change events from a screen capture: pace the polling
+        r = self.locate()
+        if mac_status()["locked"]:
+            raise RuntimeError("le Mac est verrouillé")
+        with tempfile.NamedTemporaryFile(suffix=".jpg") as f:
+            region = f"{int(r['x'])},{int(r['y'])},{int(r['w'])},{int(r['h'])}"
+            subprocess.run(["screencapture", "-x", "-t", "jpg", "-R", region, f.name], timeout=10, check=True)
+            return Path(f.name).read_bytes(), after + 1
+
+    def resize(self, w, h, dpr):
+        pass  # the pane keeps its size on the Mac; the phone letterboxes it
+
+    def tap(self, fx, fy):
+        x, y = self.point(fx, fy)
+        helper("click", f"{x:.1f}", f"{y:.1f}")
+        return {}
+
+    def type(self, text):
+        helper("type", stdin=text.encode())
+
+    def key(self, name):
+        helper("key", name)
+
+    def scroll(self, dx, dy, fx=0.5, fy=0.5):
+        x, y = self.point(fx, fy)
+        helper("scroll", f"{x:.1f}", f"{y:.1f}", str(int(dy)))
+        return {}
+
+
+KEYS = {
+    "enter": ("Enter", "Enter", 13, "\r"),
+    "tab": ("Tab", "Tab", 9, None),
+    "shifttab": ("Tab", "Tab", 9, None),
+    "backspace": ("Backspace", "Backspace", 8, None),
+    "escape": ("Escape", "Escape", 27, None),
+    "clear": None,
+}
+
+
+# Editable elements in the viewport, as fractions of it, so the phone can open its
+# keyboard in the same gesture as the tap. Iframes count: their fields are invisible here.
+FIELDS_JS = r"""(() => {
+  const W = innerWidth, H = innerHeight, out = [];
+  const skip = new Set(["button","submit","checkbox","radio","reset","file","image","range","color","hidden"]);
+  for (const e of document.querySelectorAll("input,textarea,[contenteditable=''],[contenteditable=true],iframe")) {
+    if (e.tagName === "INPUT" && skip.has(e.type)) continue;
+    if (e.disabled || e.readOnly) continue;
+    const r = e.getBoundingClientRect();
+    if (r.width < 4 || r.height < 4 || r.bottom < 0 || r.top > H || r.right < 0 || r.left > W) continue;
+    out.push({x: r.left / W, y: r.top / H, w: r.width / W, h: r.height / H,
+              type: e.tagName === "INPUT" ? e.type : e.tagName.toLowerCase()});
+    if (out.length >= 40) break;
+  }
+  return out;
+})()"""
+
+FOCUS_JS = r"""(() => {
+  let e = document.activeElement;
+  while (e && e.shadowRoot && e.shadowRoot.activeElement) e = e.shadowRoot.activeElement;
+  if (!e) return {editable: false};
+  const skip = ["button","submit","checkbox","radio","reset","file","image","range","color"];
+  const ok = e.isContentEditable || e.tagName === "TEXTAREA" || e.tagName === "IFRAME"
+    || (e.tagName === "INPUT" && !skip.includes(e.type) && !e.readOnly);
+  return {editable: ok, type: e.tagName === "INPUT" ? e.type : e.tagName.toLowerCase()};
+})()"""
+
+
+class HeadlessTarget:
+    """A dedicated headless Brave, driven over CDP, its viewport matched to the phone's screen."""
+
+    name = "headless"
+
+    def __init__(self, url):
+        from websockets.sync.client import connect
+
+        self.ids = itertools.count(1)
+        self.send_lock = threading.Lock()
+        self.pending = {}
+        self.frame_cv = threading.Condition()
+        self.jpeg, self.seq = None, 0
+        self.view = dict(PHONE, dpr=2)
+        if not self.alive():
+            if not Path(BRAVE).exists():
+                raise RuntimeError(f"Brave not found at {BRAVE}")
+            PROFILE.mkdir(parents=True, exist_ok=True)
+            os.chmod(PROFILE.parent, 0o700)
+            subprocess.Popen(
+                [BRAVE, "--headless=new", f"--remote-debugging-port={CDP_PORT}", "--remote-debugging-address=127.0.0.1",
+                 f"--user-data-dir={PROFILE}", "--no-first-run", "--no-default-browser-check",
+                 f"--window-size={PHONE['width']},{PHONE['height']}", "about:blank"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
+            )
+            for _ in range(50):
+                if self.alive():
+                    break
+                time.sleep(0.2)
+            else:
+                raise RuntimeError("headless Brave did not start")
+        pages = [t for t in self.http("/json/list") if t.get("type") == "page"]
+        ws = pages[0]["webSocketDebuggerUrl"] if pages else self.http("/json/new?about:blank", "PUT")["webSocketDebuggerUrl"]
+        self.ws = connect(ws, max_size=32 * 1024 * 1024, open_timeout=10)
+        threading.Thread(target=self.reader, daemon=True).start()
+        self.cdp("Emulation.setUserAgentOverride", userAgent=self.mobile_ua())
+        self.resize(PHONE["width"], PHONE["height"], 2)
+        if url:
+            self.cdp("Page.navigate", url=url)
+
+    @staticmethod
+    def http(path, method="GET"):
+        req = urllib.request.Request(f"http://127.0.0.1:{CDP_PORT}{path}", method=method)
+        with urllib.request.urlopen(req, timeout=3) as r:
+            return json.load(r)
+
+    @classmethod
+    def alive(cls):
+        try:
+            cls.http("/json/version")
+            return True
+        except Exception:
+            return False
+
+    def mobile_ua(self):
+        ver = self.http("/json/version").get("Browser", "Chrome/140.0.0.0").split("/")[-1]
+        major = ver.split(".")[0]
+        return f"Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{major}.0.0.0 Mobile Safari/537.36"
+
+    def reader(self):
+        """Route CDP replies to their callers and keep the latest screencast frame."""
+        while True:
+            try:
+                msg = json.loads(self.ws.recv())
+            except Exception:
+                for slot in self.pending.values():
+                    slot["msg"] = {"error": {"message": "CDP connection closed"}}
+                    slot["ev"].set()
+                return
+            if "id" in msg:
+                slot = self.pending.get(msg["id"])
+                if slot:
+                    slot["msg"] = msg
+                    slot["ev"].set()
+            elif msg.get("method") == "Page.screencastFrame":
+                p = msg["params"]
+                with self.send_lock:
+                    self.ws.send(json.dumps({"id": next(self.ids), "method": "Page.screencastFrameAck",
+                                             "params": {"sessionId": p["sessionId"]}}))
+                with self.frame_cv:
+                    self.jpeg, self.seq = base64.b64decode(p["data"]), self.seq + 1
+                    self.frame_cv.notify_all()
+
+    def cdp(self, method, **params):
+        mid = next(self.ids)
+        slot = self.pending[mid] = {"ev": threading.Event(), "msg": None}
+        try:
+            with self.send_lock:
+                self.ws.send(json.dumps({"id": mid, "method": method, "params": params}))
+            if not slot["ev"].wait(20):
+                raise RuntimeError(f"CDP timeout on {method}")
+        finally:
+            self.pending.pop(mid, None)
+        msg = slot["msg"]
+        if "error" in msg:
+            raise RuntimeError(msg["error"].get("message", "CDP error"))
+        return msg.get("result", {})
+
+    def js(self, expr):
+        return self.cdp("Runtime.evaluate", expression=expr, returnByValue=True).get("result", {}).get("value")
+
+    def resize(self, w, h, dpr):
+        """Give the page the phone's own viewport, so the view maps 1:1 onto its screen."""
+        w, h = max(240, min(int(w), 1200)), max(240, min(int(h), 2000))
+        dpr = max(1.0, min(float(dpr), 3.0))
+        self.view = {"width": w, "height": h, "dpr": dpr}
+        self.cdp("Emulation.setDeviceMetricsOverride", width=w, height=h, deviceScaleFactor=dpr, mobile=True)
+        self.cdp("Emulation.setTouchEmulationEnabled", enabled=True, maxTouchPoints=5)
+        try:
+            self.cdp("Page.stopScreencast")
+        except RuntimeError:
+            pass
+        scale = min(dpr, 2.0)  # sharp enough, and keeps frames small over Tailscale
+        self.cdp("Page.startScreencast", format="jpeg", quality=72,
+                 maxWidth=int(w * scale), maxHeight=int(h * scale), everyNthFrame=1)
+        # Keep the focused field in sight when the phone keyboard shrinks the view.
+        self.js("document.activeElement && document.activeElement !== document.body"
+                " && document.activeElement.scrollIntoView({block: 'center'})")
+
+    def state(self):
+        url = self.js("location.href") or ""
+        try:
+            focus = self.js(FOCUS_JS) or {}
+        except RuntimeError:
+            focus = {}
+        return {"url": url, "visible": True, "locked": False, "fields": self.fields(), "editable": focus.get("editable")}
+
+    def fields(self):
+        try:
+            return self.js(FIELDS_JS) or []
+        except RuntimeError:
+            return []
+
+    def frame(self, after=0):
+        with self.frame_cv:
+            # Screencast frames only come when the page changes: wait a little for a newer one.
+            self.frame_cv.wait_for(lambda: self.seq > after, timeout=1.5)
+            if self.jpeg is not None:
+                return self.jpeg, self.seq
+        r = self.cdp("Page.captureScreenshot", format="jpeg", quality=72)
+        return base64.b64decode(r["data"]), self.seq
+
+    def tap(self, fx, fy):
+        x, y = fx * self.view["width"], fy * self.view["height"]
+        pt = [{"x": x, "y": y, "radiusX": 6, "radiusY": 6}]
+        self.cdp("Input.dispatchTouchEvent", type="touchStart", touchPoints=pt)
+        self.cdp("Input.dispatchTouchEvent", type="touchEnd", touchPoints=[])
+        time.sleep(0.08)
+        try:
+            return {**(self.js(FOCUS_JS) or {}), "fields": self.fields()}
+        except RuntimeError:
+            return {}
+
+    def type(self, text):
+        self.cdp("Input.insertText", text=text)
+
+    def key(self, name):
+        if name == "clear":
+            # Empty the focused field: select all, then delete.
+            self.cdp("Input.dispatchKeyEvent", type="rawKeyDown", key="a", code="KeyA", windowsVirtualKeyCode=65,
+                     modifiers=4, commands=["selectAll"])
+            self.cdp("Input.dispatchKeyEvent", type="keyUp", key="a", code="KeyA", windowsVirtualKeyCode=65, modifiers=4)
+            name = "backspace"
+        key, code, vk, text = KEYS[name]
+        mods = {"modifiers": 8} if name == "shifttab" else {}
+        extra = {"text": text} if text else {}
+        self.cdp("Input.dispatchKeyEvent", type="keyDown", key=key, code=code, windowsVirtualKeyCode=vk, **mods, **extra)
+        self.cdp("Input.dispatchKeyEvent", type="keyUp", key=key, code=code, windowsVirtualKeyCode=vk, **mods)
+
+    def scroll(self, dx, dy, fx=0.5, fy=0.5):
+        self.cdp("Input.dispatchMouseEvent", type="mouseWheel", x=fx * self.view["width"], y=fy * self.view["height"],
+                 deltaX=dx, deltaY=dy)
+        return {"fields": self.fields()}
+
+
+class State:
+    def __init__(self):
+        self.result = None
+        self.done = threading.Event()
+
+
+def make_handler(token, target, state):
+    class Handler(BaseHTTPRequestHandler):
+        server_version = "remote-login"
+
+        def log_message(self, *a):  # request bodies may hold passwords: log nothing
+            pass
+
+        def authed(self):
+            got = parse_qs(urlparse(self.path).query).get("t", [""])[0]
+            return secrets.compare_digest(got, token)
+
+        def send(self, code, body=b"", ctype="application/json"):
+            if isinstance(body, (dict, list)):
+                body = json.dumps(body).encode()
+            elif isinstance(body, str):
+                body = body.encode()
+            self.send_response(code)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Referrer-Policy", "no-referrer")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_GET(self):
+            if not self.authed():
+                return self.send(403, {"error": "lien invalide ou expiré"})
+            path = urlparse(self.path).path
+            try:
+                if path == "/":
+                    return self.send(200, PAGE, "text/html; charset=utf-8")
+                if path == "/state":
+                    return self.send(200, {**target.state(), "target": target.name})
+                if path == "/frame.jpg":
+                    after = int(parse_qs(urlparse(self.path).query).get("after", ["0"])[0] or 0)
+                    jpeg, seq = target.frame(after)
+                    self.send_response(200)
+                    self.send_header("Content-Type", "image/jpeg")
+                    self.send_header("Cache-Control", "no-store")
+                    self.send_header("X-Seq", str(seq))
+                    self.send_header("Content-Length", str(len(jpeg)))
+                    self.end_headers()
+                    self.wfile.write(jpeg)
+                    return
+            except Exception as e:
+                return self.send(409, {"error": str(e)})
+            return self.send(404, {"error": "not found"})
+
+        def do_POST(self):
+            if not self.authed():
+                return self.send(403, {"error": "lien invalide ou expiré"})
+            n = int(self.headers.get("Content-Length") or 0)
+            try:
+                data = json.loads(self.rfile.read(min(n, 65536)) or b"{}")
+            except ValueError:
+                return self.send(400, {"error": "bad json"})
+            path = urlparse(self.path).path
+            clamp = lambda v: min(max(float(v), 0.0), 1.0)
+            try:
+                if path == "/tap":
+                    return self.send(200, {"ok": True, **(target.tap(clamp(data["x"]), clamp(data["y"])) or {})})
+                elif path == "/edit":
+                    # Live typing from the phone keyboard: delete n chars, then insert text.
+                    for _ in range(max(0, min(int(data.get("del", 0)), 200))):
+                        target.key("backspace")
+                    text = str(data.pop("text", ""))[:2000]
+                    if text:
+                        target.type(text)
+                    del text
+                elif path == "/viewport":
+                    target.resize(data["w"], data["h"], data.get("dpr", 2))
+                elif path == "/type":
+                    text = str(data.pop("text", ""))[:2000]
+                    if text:
+                        target.type(text)
+                    del text
+                elif path == "/key":
+                    name = str(data["key"])
+                    if name not in KEYS:
+                        return self.send(400, {"error": "unknown key"})
+                    target.key(name)
+                elif path == "/scroll":
+                    lim = lambda v: max(-2000, min(2000, int(v)))
+                    res = target.scroll(lim(data.get("dx", 0)), lim(data.get("dy", 300)),
+                                        clamp(data.get("x", 0.5)), clamp(data.get("y", 0.5)))
+                    return self.send(200, {"ok": True, **(res or {})})
+                elif path in ("/done", "/cancel"):
+                    state.result = "done" if path == "/done" else "cancel"
+                    self.send(200, {"ok": True})
+                    state.done.set()
+                    return
+                else:
+                    return self.send(404, {"error": "not found"})
+            except Exception as e:
+                return self.send(500, {"error": str(e)})
+            return self.send(200, {"ok": True})
+
+    return Handler
+
+
+def pick_target(a):
+    if a.target in ("auto", "pane"):
+        why = None
+        if not HELPER.exists():
+            why = f"missing {HELPER}; run ./build.sh"
+        else:
+            st = mac_status()
+            if st.get("locked"):
+                why = "Mac screen is locked"
+            else:
+                try:
+                    PaneTarget(a.host).locate(fresh=True)
+                    return PaneTarget(a.host)
+                except Exception as e:
+                    why = f"browser pane not visible ({e})"
+        if a.target == "pane":
+            sys.exit(f"pane target unavailable: {why}")
+        print(f"FALLBACK headless: {why}", flush=True)
+    if not a.url and not HeadlessTarget.alive():
+        sys.exit("headless target needs --url (the sign-in page)")
+    return HeadlessTarget(a.url)
+
+
+def serve(a):
+    target = pick_target(a)
+    bind = a.bind or tailscale_ip()
+    if not bind:
+        sys.exit("no Tailscale IPv4 address; pass --bind")
+    token = secrets.token_urlsafe(24)
+    state = State()
+    httpd = ThreadingHTTPServer((bind, a.port), make_handler(token, target, state))
+    link = f"http://{bind}:{a.port}/?t={token}"
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+
+    print(f"TARGET {target.name}", flush=True)
+    print(f"LINK {link}", flush=True)
+    if a.notify:
+        what = a.host or (urlparse(a.url).hostname if a.url else None) or "un site"
+        # Your own executable sends the link to your phone (push service, chat bot, mail...).
+        if not NOTIFY.exists():
+            print(f"PUSH failed: no {NOTIFY} (executable called with LINK MESSAGE)", flush=True)
+        else:
+            r = subprocess.run([str(NOTIFY), link, f"Claude a besoin que tu te connectes à {what}. Touche pour ouvrir."],
+                               capture_output=True, text=True, timeout=30)
+            print("PUSH ok" if r.returncode == 0 else f"PUSH failed: {r.stderr.strip()}", flush=True)
+
+    finished = state.done.wait(a.minutes * 60)
+    time.sleep(0.3)  # let the last response reach the phone
+    httpd.shutdown()
+    if not finished:
+        print("TIMEOUT", flush=True)
+        sys.exit(2)
+    print("DONE" if state.result == "done" else "CANCELLED", flush=True)
+    sys.exit(0 if state.result == "done" else 3)
+
+
+def headless_stop():
+    r = subprocess.run(["pgrep", "-f", f"remote-debugging-port={CDP_PORT}"], capture_output=True, text=True)
+    pids = [int(p) for p in r.stdout.split()]
+    for pid in pids:
+        os.kill(pid, signal.SIGTERM)
+    print(f"stopped {len(pids)} process(es)" if pids else "not running")
+
+
+def main():
+    p = argparse.ArgumentParser(prog="remote-login", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = p.add_subparsers(dest="cmd", required=True)
+    s = sub.add_parser("serve", help="serve the phone page and wait until the person is done")
+    s.add_argument("--target", choices=["auto", "pane", "headless"], default="auto")
+    s.add_argument("--url", help="sign-in page to open in the headless browser")
+    s.add_argument("--host", help="site being signed in to (picks the pane page, named in the push)")
+    s.add_argument("--port", type=int, default=8791)
+    s.add_argument("--bind", help="address to listen on (default: this Mac's Tailscale IPv4)")
+    s.add_argument("--minutes", type=float, default=15, help="give up after this long (default 15)")
+    s.add_argument("--notify", action="store_true", help="also send the link with ~/.config/remote-login/notify LINK MESSAGE")
+    sub.add_parser("headless-stop", help="stop the headless Brave")
+    a = p.parse_args()
+    if a.cmd == "serve":
+        serve(a)
+    else:
+        headless_stop()
+
+
+if __name__ == "__main__":
+    main()
