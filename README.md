@@ -1,150 +1,152 @@
 <div align="center">
 
-<img src="docs/logo.svg" width="112" alt="remote-login logo">
+[![English](https://img.shields.io/badge/read%20in-English-1f1e1c?style=for-the-badge)](README.en.md)
+
+<img src="docs/logo.svg" width="112" alt="Logo de remote-login">
 
 # remote-login
 
-**Sign in to your AI agent's browser from your phone.**<br>
-Your agent hits a login page, sends you a link, you sign in on a live view. It never sees your password.
+**Connecte-toi au navigateur de ton agent IA depuis ton téléphone.**<br>
+Ton agent tombe sur une page de connexion, il t'envoie un lien, tu te connectes sur une vue en direct. Il ne voit jamais ton mot de passe.
 
-[![License: MIT](https://img.shields.io/github/license/pyxl-dev/remote-login?color=b0502d)](LICENSE)
-[![macOS](https://img.shields.io/badge/macOS-only-000?logo=apple&logoColor=white)](#requirements)
+[![Licence MIT](https://img.shields.io/github/license/pyxl-dev/remote-login?color=b0502d&label=licence)](LICENSE)
+[![macOS](https://img.shields.io/badge/macOS-uniquement-000?logo=apple&logoColor=white)](#prérequis)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-3776AB?logo=python&logoColor=white)](remote-login)
-[![uv](https://img.shields.io/badge/runs%20with-uv-DE5FE9?logo=uv&logoColor=white)](https://docs.astral.sh/uv/)
-[![Tailscale](https://img.shields.io/badge/over-Tailscale-242424?logo=tailscale&logoColor=white)](https://tailscale.com)
-[![Claude Code skill](https://img.shields.io/badge/Claude%20Code-skill-D97757?logo=claude&logoColor=white)](SKILL.md)
+[![uv](https://img.shields.io/badge/lanc%C3%A9%20avec-uv-DE5FE9?logo=uv&logoColor=white)](https://docs.astral.sh/uv/)
+[![Tailscale](https://img.shields.io/badge/via-Tailscale-242424?logo=tailscale&logoColor=white)](https://tailscale.com)
+[![Skill Claude Code](https://img.shields.io/badge/Claude%20Code-skill-D97757?logo=claude&logoColor=white)](SKILL.md)
 
 </div>
 
-<p align="center"><img src="docs/screenshot.png" width="300" alt="The phone page: a full-screen live view of the agent's browser, with the phone keyboard typing into the login form"></p>
+<p align="center"><img src="docs/screenshot.png" width="300" alt="La page sur le téléphone : vue plein écran du navigateur de l'agent, le clavier du téléphone tape dans le formulaire de connexion"></p>
 
-## Why
+## Pourquoi
 
-Browser agents get stuck on sign-in pages, 2FA prompts and captchas. When you are away from the Mac, "please sign in" means the task waits until you are back. And pasting a password into the chat is not an option.
+Les agents qui pilotent un navigateur se bloquent sur les pages de connexion, la double authentification et les captchas. Quand tu n'es pas devant le Mac, « connecte-toi s'il te plaît » veut dire que la tâche attend ton retour. Et coller un mot de passe dans le chat, c'est non.
 
-remote-login turns that into a link on your phone. Tap it, sign in like on any website, tap **Terminé**, and the agent carries on.
+remote-login transforme ça en un lien sur ton téléphone. Tu l'ouvres, tu te connectes comme sur n'importe quel site, tu touches **Terminé**, et l'agent reprend.
 
-## How it works
+## Comment ça marche
 
 ```mermaid
 sequenceDiagram
-    participant A as AI agent
+    participant A as Agent IA
     participant S as remote-login (Mac)
-    participant B as Agent's browser
-    participant P as Your phone
+    participant B as Navigateur de l'agent
+    participant P as Ton téléphone
     A->>S: remote-login serve --url https://site/login
     S-->>A: LINK http://100.x.y.z:8791/?t=…
-    A->>P: sends you the link (chat or push)
-    P->>S: open the link over Tailscale
-    loop live view
-        S->>P: screen frames
-        P->>S: taps, keystrokes
-        S->>B: real input
+    A->>P: t'envoie le lien (chat ou notification)
+    P->>S: ouvre le lien via Tailscale
+    loop vue en direct
+        S->>P: images de l'écran
+        P->>S: touchers, frappe
+        S->>B: vraie saisie
     end
     P->>S: Terminé
-    S-->>A: DONE (exit 0)
-    A->>B: carries on, signed in
+    S-->>A: DONE (code 0)
+    A->>B: reprend, connecté
 ```
 
-- **Feels like a browser.** Full screen, sized to your phone. Tap a field and your phone keyboard opens; what you type lands live in the page. Swipe to scroll.
-- **Credentials never reach the agent.** They go phone → server → browser, and are never logged or stored.
-- **Private by default.** The page listens on the Mac's Tailscale address only, behind a one-time token. It stops on Terminé, Annuler or after 15 minutes.
-- **Two targets.** `pane` drives the Claude desktop app's built-in browser. `headless` runs a dedicated Brave that works even with the Mac locked.
+- **Comme un vrai navigateur.** Plein écran, à la taille de ton téléphone. Tu touches un champ, ton clavier s'ouvre, et ce que tu tapes arrive en direct dans la page. Tu glisses pour défiler.
+- **Tes identifiants ne passent jamais par l'agent.** Ils vont du téléphone au serveur puis au navigateur, sans être enregistrés nulle part.
+- **Privé par défaut.** La page n'écoute que sur l'adresse Tailscale du Mac, derrière un jeton à usage unique. Elle s'arrête sur Terminé, sur Annuler ou au bout de 15 minutes.
+- **Deux navigateurs possibles.** `pane` pilote le navigateur intégré de l'app Claude. `headless` lance un Brave dédié, qui marche même Mac verrouillé.
 
-## Install
+## Installation
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/pyxl-dev/remote-login/main/install.sh | sh
 ```
 
-The installer puts the code in `~/.local/share/remote-login`, links `remote-login` into `~/.local/bin`, builds the Swift helper and installs the Claude Code skill. Run it again to update; `--uninstall` removes it. It only touches your home folder.
+L'installateur met le code dans `~/.local/share/remote-login`, rend la commande `remote-login` disponible dans `~/.local/bin`, compile la petite partie en Swift et installe le skill Claude Code. Relance-le pour mettre à jour ; `--uninstall` enlève tout. Il ne touche qu'à ton dossier perso.
 
-### Let your AI agent do it
+### Laisse ton agent IA s'en occuper
 
-Paste this into Claude Code, Codex, Cursor or any agent with a shell:
+Colle ceci dans Claude Code, Codex, Cursor ou n'importe quel agent qui a accès à un terminal :
 
 ```text
-Install and use remote-login: https://github.com/pyxl-dev/remote-login
-Follow the AGENTS.md in that repository.
+Installe et utilise remote-login : https://github.com/pyxl-dev/remote-login
+Suis le fichier AGENTS.md de ce dépôt.
 ```
 
-[`AGENTS.md`](AGENTS.md) tells the agent how to install it, when to use it, how to read the result, and the safety rules (never ask for a password in chat).
+[`AGENTS.md`](AGENTS.md) explique à l'agent comment l'installer, quand s'en servir, comment lire le résultat, et les règles de sécurité (ne jamais demander de mot de passe dans le chat). Il est en anglais, la langue que tous les agents lisent.
 
-### Requirements
+### Prérequis
 
-| | Needed for |
+| | Sert à |
 | --- | --- |
-| macOS | everything |
-| [uv](https://docs.astral.sh/uv/) | running the script (it fetches Python and dependencies itself) |
-| [Tailscale](https://tailscale.com/download) on the Mac and the phone | reaching the page from the phone |
-| [Brave](https://brave.com/download) | the `headless` target |
-| Claude desktop app + Xcode command line tools (`swiftc`) | the `pane` target |
+| macOS | tout |
+| [uv](https://docs.astral.sh/uv/) | lancer le script (il récupère Python et les dépendances tout seul) |
+| [Tailscale](https://tailscale.com/download) sur le Mac et le téléphone | ouvrir la page depuis le téléphone |
+| [Brave](https://brave.com/download) | le mode `headless` |
+| App Claude + outils en ligne de commande Xcode (`swiftc`) | le mode `pane` |
 
-## Usage
+## Utilisation
 
 ```sh
 remote-login serve --host example.com --url https://example.com/login --notify
 ```
 
-| Option | Default | |
+| Option | Par défaut | |
 | --- | --- | --- |
-| `--target auto\|pane\|headless` | `auto` | `auto` picks `pane` when the Mac is unlocked and the pane visible, else `headless` |
-| `--url URL` | | sign-in page to open (required for a fresh `headless` browser) |
-| `--host HOST` | | site being signed in to: picks the pane page, named in the push |
-| `--minutes N` | `15` | give up after this long |
-| `--notify` | off | also send the link with your notify script (below) |
-| `--bind ADDR`, `--port N` | Tailscale IPv4, `8791` | where the page listens |
+| `--target auto\|pane\|headless` | `auto` | `auto` choisit `pane` si le Mac est déverrouillé et le navigateur intégré affiché, sinon `headless` |
+| `--url URL` | | page de connexion à ouvrir (obligatoire pour un `headless` qui démarre) |
+| `--host HOST` | | site concerné : sert à trouver la page dans `pane`, et à le nommer dans la notification |
+| `--minutes N` | `15` | abandonne au bout de ce délai |
+| `--notify` | non | envoie aussi le lien avec ton script de notification (plus bas) |
+| `--bind ADDR`, `--port N` | IPv4 Tailscale, `8791` | où la page écoute |
 
-It prints `TARGET <t>` and `LINK <url>`, then blocks until you are done:
+La commande affiche `TARGET <t>` et `LINK <url>`, puis attend que tu aies fini :
 
-| Exit | Output | Meaning |
+| Code | Sortie | Signification |
 | --- | --- | --- |
-| `0` | `DONE` | you tapped Terminé |
-| `3` | `CANCELLED` | you tapped Annuler |
-| `2` | `TIMEOUT` | nobody finished in time |
+| `0` | `DONE` | tu as touché Terminé |
+| `3` | `CANCELLED` | tu as touché Annuler |
+| `2` | `TIMEOUT` | personne n'a fini à temps |
 
-`remote-login headless-stop` stops the headless Brave. Its profile (`~/.cache/remote-login/profile`) keeps your sign-ins for next time; any CDP client on `http://127.0.0.1:9334` can continue there.
+`remote-login headless-stop` arrête le Brave headless. Son profil (`~/.cache/remote-login/profile`) garde tes connexions pour la prochaine fois ; n'importe quel client CDP sur `http://127.0.0.1:9334` peut continuer dedans.
 
-### Push the link to your phone
+### Recevoir le lien en notification
 
-`--notify` runs `~/.config/remote-login/notify LINK MESSAGE` (or `$REMOTE_LOGIN_NOTIFY`). Write it with whatever reaches you, for example [ntfy](https://ntfy.sh):
+`--notify` lance `~/.config/remote-login/notify LIEN MESSAGE` (ou `$REMOTE_LOGIN_NOTIFY`). Écris-le avec ce qui te joint le mieux, par exemple [ntfy](https://ntfy.sh) :
 
 ```sh
 #!/bin/sh
-curl -s -H "Click: $1" -d "$2" https://ntfy.sh/your-private-topic
+curl -s -H "Click: $1" -d "$2" https://ntfy.sh/ton-sujet-prive
 ```
 
-## Security
+## Sécurité
 
-- One-time random token in the link, checked in constant time. The server stops as soon as you finish or cancel.
-- Bound to the Tailscale address, so only devices on your tailnet can reach it.
-- Request bodies are never logged; typed text is not kept after it is sent to the browser.
-- The headless browser listens for CDP on `127.0.0.1` only, with its own profile in `~/.cache/remote-login` (mode 700).
+- Un jeton aléatoire à usage unique dans le lien, vérifié en temps constant. Le serveur s'arrête dès que tu termines ou annules.
+- La page n'écoute que sur l'adresse Tailscale : seuls les appareils de ton réseau Tailscale peuvent l'ouvrir.
+- Le contenu des requêtes n'est jamais journalisé ; le texte tapé n'est pas gardé une fois envoyé au navigateur.
+- Le Brave headless n'accepte le CDP que sur `127.0.0.1`, avec son propre profil dans `~/.cache/remote-login` (droits 700).
 
-## Development
+## Développement
 
 ```sh
 git clone https://github.com/pyxl-dev/remote-login && cd remote-login
-./install.sh                 # installs this clone
-python3 test/login-fixture.py   # test sign-in site on 127.0.0.1:8799 (demo / demo-pass-8799)
+./install.sh                    # installe ce clone
+python3 test/login-fixture.py   # site de test sur 127.0.0.1:8799 (demo / demo-pass-8799)
 ```
 
-Test the headless target without touching a real sign-in: `REMOTE_LOGIN_CDP_PORT` and `REMOTE_LOGIN_PROFILE` move the browser elsewhere.
+Pour tester le mode headless sans toucher à une vraie connexion, `REMOTE_LOGIN_CDP_PORT` et `REMOTE_LOGIN_PROFILE` déplacent le navigateur ailleurs :
 
 ```sh
 REMOTE_LOGIN_CDP_PORT=9344 REMOTE_LOGIN_PROFILE=/tmp/rl ./remote-login serve \
   --target headless --bind 127.0.0.1 --port 8792 --url http://login.localhost:8799/
 ```
 
-| File | |
+| Fichier | |
 | --- | --- |
-| `remote-login` | server and CLI (uv script) |
-| `page.html` | the phone page |
-| `helper/main.swift` | finds the desktop app's browser pane (Accessibility) and posts real mouse and keyboard events |
-| `SKILL.md` | Claude Code skill |
-| `AGENTS.md` | instructions for any AI agent |
-| `install.sh` | installer |
+| `remote-login` | serveur et commande (script uv) |
+| `page.html` | la page du téléphone |
+| `helper/main.swift` | trouve le navigateur intégré de l'app Claude (Accessibilité) et envoie de vrais clics et frappes |
+| `SKILL.md` | skill Claude Code |
+| `AGENTS.md` | instructions pour n'importe quel agent IA |
+| `install.sh` | installateur |
 
-## License
+## Licence
 
 [MIT](LICENSE)
