@@ -18,7 +18,7 @@ Your agent hits a login page, sends you a link, you sign in on a live view. It n
 
 </div>
 
-<p align="center"><a href="docs/trailer.en.mp4"><img src="docs/trailer-poster.jpg" width="800" alt="Play the remote-login trailer"></a><br><sub>▶ The trailer (35 s, sound on)</sub></p>
+https://github.com/user-attachments/assets/b3ff69d6-79d3-4b9e-ae87-73ad5b4a7406
 
 <p align="center"><img src="docs/screenshot.png" width="300" alt="The phone page: a full-screen live view of the agent's browser, with the phone keyboard typing into the login form"></p>
 
