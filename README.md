@@ -18,6 +18,8 @@ Ton agent tombe sur une page de connexion, il t'envoie un lien, tu te connectes 
 
 </div>
 
+<p align="center"><a href="docs/trailer.mp4"><img src="docs/trailer-poster.jpg" width="800" alt="Lancer le trailer de remote-login"></a><br><sub>▶ Le trailer (35 s, avec le son)</sub></p>
+
 <p align="center"><img src="docs/screenshot.png" width="300" alt="La page sur le téléphone : vue plein écran du navigateur de l'agent, le clavier du téléphone tape dans le formulaire de connexion"></p>
 
 ## Pourquoi
