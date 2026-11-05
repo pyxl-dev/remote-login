@@ -33,5 +33,5 @@ description: Get the user signed in to a site from their phone when the built-in
 
 - A headless sign-in does not reach the built-in pane: Claude's cookie import needs a click in the desktop app and a keychain prompt. If the task must run in the pane, wait for the Mac to be unlocked and use the pane target.
 - Pane target: the Mac must stay unlocked and the session on screen during the sign-in; the page warns them if the Mac locks.
-- Port 8791 on the Tailscale address only; the token in the link is single-use (server stops on Terminé/Annuler/timeout).
+- Port 8791 on the Tailscale address only; the token in the link is single-use: the first browser that opens the page claims it with a session cookie, any other device gets 403 (server stops on Terminé/Annuler/timeout).
 - Build the helper after a fresh clone: `./build.sh` (Swift, uses the desktop app's Accessibility and Screen Recording grants, so run it from a desktop-app session).

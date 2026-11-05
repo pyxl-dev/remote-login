@@ -120,7 +120,7 @@ curl -s -H "Click: $1" -d "$2" https://ntfy.sh/your-private-topic
 
 ## Security
 
-- One-time random token in the link, checked in constant time. The server stops as soon as you finish or cancel.
+- One-time random token in the link, checked in constant time. The first browser that opens the page claims it (session cookie): the same link opened elsewhere is refused. The server stops as soon as you finish or cancel.
 - Bound to the Tailscale address, so only devices on your tailnet can reach it.
 - Request bodies are never logged; typed text is not kept after it is sent to the browser.
 - The headless browser listens for CDP on `127.0.0.1` only, with its own profile in `~/.cache/remote-login` (mode 700).

@@ -120,7 +120,7 @@ curl -s -H "Click: $1" -d "$2" https://ntfy.sh/ton-sujet-prive
 
 ## Sécurité
 
-- Un jeton aléatoire à usage unique dans le lien, vérifié en temps constant. Le serveur s'arrête dès que tu termines ou annules.
+- Un jeton aléatoire à usage unique dans le lien, vérifié en temps constant. Le premier navigateur qui ouvre la page la garde (cookie de session) : le même lien rouvert ailleurs est refusé. Le serveur s'arrête dès que tu termines ou annules.
 - La page n'écoute que sur l'adresse Tailscale : seuls les appareils de ton réseau Tailscale peuvent l'ouvrir.
 - Le contenu des requêtes n'est jamais journalisé ; le texte tapé n'est pas gardé une fois envoyé au navigateur.
 - Le Brave headless n'accepte le CDP que sur `127.0.0.1`, avec son propre profil dans `~/.cache/remote-login` (droits 700).
