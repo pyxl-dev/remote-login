@@ -15,7 +15,7 @@ Two targets:
             keystrokes on the Mac, so the screen must be unlocked and this
             session (with its Browser pane) on screen. The sign-in lands in the
             pane's own profile.
-  headless  A dedicated headless Brave (profile ~/.cache/remote-login/profile,
+  headless  A dedicated headless Chromium for Testing (profile ~/.cache/remote-login/profile,
             CDP on 127.0.0.1:9334). Works with the Mac locked. The sign-in
             stays in that profile; keep working there with
             BU_CDP_URL=http://127.0.0.1:9334 BU_NAME=remote-login browser-harness.
@@ -48,7 +48,13 @@ from urllib.parse import parse_qs, urlparse
 HERE = Path(__file__).resolve().parent
 HELPER = HERE / "bin" / "rl-helper"
 PAGE = (HERE / "page.html").read_text(encoding="utf-8")
-BRAVE = "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser"
+def isolated_chromium():
+    """Chromium for the headless target, never the user's Brave: a headless Brave shares Brave's
+    bundle id, so opening Brave from the Dock activates it and no window appears."""
+    try:
+        return subprocess.run(["isolated-chromium"], capture_output=True, text=True, check=True).stdout.strip()
+    except (OSError, subprocess.CalledProcessError):
+        raise RuntimeError("no isolated Chromium: run `bunx playwright install chromium` (see ~/.local/bin/isolated-chromium)")
 # Overridable so a test run never touches a live sign-in.
 PROFILE = Path(os.environ.get("REMOTE_LOGIN_PROFILE", Path.home() / ".cache" / "remote-login" / "profile"))
 CDP_PORT = int(os.environ.get("REMOTE_LOGIN_CDP_PORT", "9334"))
@@ -177,7 +183,7 @@ FOCUS_JS = r"""(() => {
 
 
 class HeadlessTarget:
-    """A dedicated headless Brave, driven over CDP, its viewport matched to the phone's screen."""
+    """A dedicated headless Chromium (never Brave), driven over CDP, its viewport matched to the phone's screen."""
 
     name = "headless"
 
@@ -191,12 +197,11 @@ class HeadlessTarget:
         self.jpeg, self.seq = None, 0
         self.view = dict(PHONE, dpr=2)
         if not self.alive():
-            if not Path(BRAVE).exists():
-                raise RuntimeError(f"Brave not found at {BRAVE}")
+            browser = isolated_chromium()
             PROFILE.mkdir(parents=True, exist_ok=True)
             os.chmod(PROFILE.parent, 0o700)
             subprocess.Popen(
-                [BRAVE, "--headless=new", f"--remote-debugging-port={CDP_PORT}", "--remote-debugging-address=127.0.0.1",
+                [browser, "--headless=new", f"--remote-debugging-port={CDP_PORT}", "--remote-debugging-address=127.0.0.1",
                  f"--user-data-dir={PROFILE}", "--no-first-run", "--no-default-browser-check",
                  f"--window-size={PHONE['width']},{PHONE['height']}", "about:blank"],
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
@@ -206,7 +211,7 @@ class HeadlessTarget:
                     break
                 time.sleep(0.2)
             else:
-                raise RuntimeError("headless Brave did not start")
+                raise RuntimeError("headless Chromium did not start")
         pages = [t for t in self.http("/json/list") if t.get("type") == "page"]
         ws = pages[0]["webSocketDebuggerUrl"] if pages else self.http("/json/new?about:blank", "PUT")["webSocketDebuggerUrl"]
         self.ws = connect(ws, max_size=32 * 1024 * 1024, open_timeout=10)
@@ -553,7 +558,7 @@ def main():
     s.add_argument("--bind", help="address to listen on (default: this Mac's Tailscale IPv4)")
     s.add_argument("--minutes", type=float, default=15, help="give up after this long (default 15)")
     s.add_argument("--notify", action="store_true", help="also send the link with ~/.config/remote-login/notify LINK MESSAGE")
-    sub.add_parser("headless-stop", help="stop the headless Brave")
+    sub.add_parser("headless-stop", help="stop the headless Chromium")
     a = p.parse_args()
     if a.cmd == "serve":
         serve(a)

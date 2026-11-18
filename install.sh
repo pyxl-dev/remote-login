@@ -51,8 +51,8 @@ if command -v uv >/dev/null; then ok "uv found"
 else die "uv is missing (it runs the Python script). Install it, then re-run:  curl -LsSf https://astral.sh/uv/install.sh | sh"; fi
 if command -v tailscale >/dev/null && tailscale ip -4 >/dev/null 2>&1; then ok "Tailscale up ($(tailscale ip -4 | head -1))"
 else warn "Tailscale not found or not connected: the phone link needs it (https://tailscale.com/download), or pass --bind."; fi
-if [ -x "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser" ]; then ok "Brave found (headless target)"
-else warn "Brave not found: the headless target needs it (https://brave.com/download). The pane target still works."; fi
+if command -v isolated-chromium >/dev/null && isolated-chromium >/dev/null 2>&1; then ok "isolated Chromium found (headless target)"
+else warn "no isolated Chromium: run 'bunx playwright install chromium' for the headless target. The pane target still works."; fi
 
 # 3. Swift helper for the pane target.
 if command -v swiftc >/dev/null; then
